@@ -10,14 +10,18 @@ const roleLabel = (u) => (u.role === 'dept_head' ? 'Department head' : u.role ==
 
 function ProfileCard({ user }) {
   const [mine, setMine] = useState([]);
-  const load = useCallback(() => api('/complaints/mine').then(setMine).catch(() => {}), []);
+  const [warn, setWarn] = useState(null);
+  const load = useCallback(() => {
+    api('/complaints/mine').then(setMine).catch(() => {});
+    api('/complaints/warnings/mine').then(setWarn).catch(() => {});
+  }, []);
   useEffect(() => {
     load();
     window.addEventListener('refresh', load);
     return () => window.removeEventListener('refresh', load);
   }, [load]);
 
-  const closed = mine.filter((c) => ['resolved', 'closed'].includes(c.status)).length;
+  const closed = mine.filter((c) => ['resolved', 'closed', 'rejected'].includes(c.status)).length;
   const ongoing = mine.length - closed;
   const priv = mine.filter((c) => !c.is_public && !c.parent_id).length;
   const affected = mine.filter((c) => !c.parent_id).reduce((n, c) => n + (c.affected_count || 0), 0);
@@ -38,7 +42,13 @@ function ProfileCard({ user }) {
           <Link to="/closed"><span>Closed issues</span><strong>{closed}</strong></Link>
           <Link to="/ongoing"><span>Private issues</span><strong>{priv}</strong></Link>
           <Link to="/ongoing"><span>Students affected</span><strong>{affected}</strong></Link>
+          {warn && warn.active > 0 && (
+            <Link to="/notifications" className="warn-stat"><span>Warnings</span><strong>{warn.active} / {warn.max}</strong></Link>
+          )}
         </div>
+        {warn?.restricted && (
+          <p className="warn-box restricted">Your account is restricted after {warn.max} warnings. You cannot report or comment until the administrator restores access.</p>
+        )}
       </div>
       <div className="li-card side-cta">
         <Link to="/report" className="li-btn primary block"><PlusIcon width={18} height={18} /> Report an issue</Link>

@@ -4,6 +4,8 @@ import { auth } from '../middleware/auth.js';
 import { addVote } from '../services/trending.js';
 import { searchComplaints, rateLimit } from '../services/search.js';
 import { emitAll } from '../socket.js';
+import { isAbusive, isRestricted, warnUser, logEvent, RESTRICTED_MESSAGE } from '../services/moderation.js';
+import { MAX_WARNINGS } from '../constants.js';
 
 const router = Router();
 const OPEN = ['assigned', 'in_progress', 'reopened'];
@@ -73,6 +75,7 @@ router.post('/:id/comments', auth(), async (req, res) => {
   const body = String(req.body.body || '').trim();
   if (!body) return res.status(400).json({ error: 'Write a comment first' });
   if (body.length > 500) return res.status(400).json({ error: 'Comments are limited to 500 characters' });
+  if (req.user.role === 'student' && (await isRestricted(req.user.id))) return res.status(403).json({ error: RESTRICTED_MESSAGE });
 
   const key = `rl:comment:${req.user.id}`; // 10 comments per minute per user
   const n = await redis.incr(key);
@@ -83,9 +86,42 @@ router.post('/:id/comments', auth(), async (req, res) => {
   if (!vis.found || !vis.allowed) return res.status(404).json({ error: 'Issue not found' });
   const c = { id: Number(req.params.id) };
 
+  // Abusive comments are never posted. Students get a recorded warning; 3 warnings restrict the account.
+  if (await isAbusive(body)) {
+    if (req.user.role !== 'student') return res.status(422).json({ error: 'Abusive language is not allowed on this platform.' });
+    const w = await warnUser({ userId: req.user.id, complaintId: c.id, reason: 'Abusive language in a comment.', source: 'auto' });
+    return res.status(422).json({
+      error: `Abusive language is not tolerated here, so your comment was not posted. This is warning ${w.count} of ${MAX_WARNINGS}.${w.restricted ? ' Your account is now restricted.' : ''}`
+    });
+  }
+
   await pool.query('INSERT INTO complaint_comments (complaint_id, user_id, body) VALUES ($1,$2,$3)', [c.id, req.user.id, body]);
   emitAll('feed:changed', {});
   res.status(201).json({ ok: true });
+});
+
+// Staff moderation: remove a comment and warn its author, with a reason the author will see.
+router.post('/comments/:cid/moderate', auth('dept_head', 'admin'), async (req, res) => {
+  const reason = String(req.body.reason || '').trim();
+  if (reason.length < 5 || reason.length > 300) return res.status(400).json({ error: 'Give a reason (5 to 300 characters)' });
+
+  const { rows: [m] } = await pool.query(
+    `SELECT m.id, m.user_id, m.complaint_id, u.role AS author_role, c.department, c.ticket_no
+     FROM complaint_comments m JOIN users u ON u.id = m.user_id JOIN complaints c ON c.id = m.complaint_id
+     WHERE m.id = $1`, [req.params.cid]);
+  if (!m) return res.status(404).json({ error: 'Comment not found' });
+  if (req.user.role === 'dept_head' && m.department !== req.user.head_department) {
+    return res.status(403).json({ error: 'This ticket belongs to another department' });
+  }
+
+  await pool.query('DELETE FROM complaint_comments WHERE id = $1', [m.id]);
+  await logEvent(m.complaint_id, req.user.id, 'comment_removed', `A comment was removed by staff. Reason: ${reason}`);
+  let warning = null;
+  if (m.author_role === 'student') {
+    warning = await warnUser({ userId: m.user_id, complaintId: m.complaint_id, issuedBy: req.user.id, reason: `Your comment on ${m.ticket_no} was removed. ${reason}` });
+  }
+  emitAll('feed:changed', {});
+  res.json({ ok: true, warning });
 });
 
 router.delete('/comments/:cid', auth(), async (req, res) => {

@@ -103,3 +103,36 @@ export function cosine(a, b) {
   for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
+
+// Optional second layer for the abuse filter: asks the LLM whether a text is abusive.
+// Fails open (returns false) on any error or when no key is set, so it never blocks honest users by accident.
+export async function llmFlagsAbuse(text) {
+  if (!KEY) return false;
+  try {
+    const res = await fetch(`${BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${KEY}` },
+      signal: AbortSignal.timeout(4000),
+      body: JSON.stringify({
+        model: MODEL,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You moderate a campus grievance portal. Reply ONLY with JSON {"abusive": true|false}. ' +
+              'abusive = true only for profanity, slurs, personal insults, threats or harassment aimed at people. ' +
+              'Angry, blunt or critical complaints about facilities, food, services or staff work are NOT abusive.'
+          },
+          { role: 'user', content: text.slice(0, 1500) }
+        ]
+      })
+    });
+    if (!res.ok) return false;
+    const out = JSON.parse((await res.json()).choices[0].message.content);
+    return out.abusive === true;
+  } catch {
+    return false;
+  }
+}

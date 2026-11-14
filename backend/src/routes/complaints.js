@@ -3,11 +3,14 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { pool, redis, STREAM } from '../config.js';
-import { ACTIVE_STATUSES, CATEGORIES, findSubCategory } from '../constants.js';
+import { ACTIVE_STATUSES, CATEGORIES, DEPARTMENTS, findSubCategory } from '../constants.js';
 import { findSimilar, rateLimit } from '../services/search.js';
 import { auth } from '../middleware/auth.js';
 import { notify, affectedUsers } from '../services/notify.js';
 import { emitToRoom, emitAll } from '../socket.js';
+import { isAbusive, isRestricted, activeWarnings, warnUser, logEvent, RESTRICTED_MESSAGE } from '../services/moderation.js';
+import { leastLoadedHead } from '../services/routing.js';
+import { MAX_WARNINGS } from '../constants.js';
 
 const router = Router();
 
@@ -28,6 +31,7 @@ const SELECT = `
   SELECT c.id, c.ticket_no, c.user_id, c.image_url, c.lat, c.lng, c.location_label, c.description, c.status,
          c.problem_type, c.category, c.department, c.priority, c.summary, c.parent_id, c.affected_count,
          c.escalated, c.is_public, c.assigned_to, c.resolution_note, c.created_at, c.assigned_at, c.resolved_at,
+         c.main_category, c.sub_category, c.reject_reason, c.edited_at,
          c.worker_name, c.worker_phone, to_char(c.expected_date, 'YYYY-MM-DD') AS expected_date, c.worker_assigned_at,
          (c.expected_date < current_date AND c.status IN ('in_progress','reopened')) AS overdue,
          p.ticket_no AS parent_ticket, s.name AS head_name, u.name AS reporter_name
@@ -42,6 +46,27 @@ const prettyDay = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-IN
 // ---- Category dropdown data -----------------------------------------------------------
 router.get('/categories', auth(), (_req, res) => {
   res.json(CATEGORIES.map((c) => ({ label: c.label, subs: c.subs.map((s) => ({ label: s.label, department: s.department })) })));
+});
+
+// ---- Helpers for the edit / reroute / reject features ---------------------------------
+const EDITABLE_STATUSES = ['processing', 'assigned'];            // before the department head starts work
+const discard = (file) => { if (file) fs.unlink(file.path, () => {}); };
+// only delete files this server generated (<timestamp>-<n>.<ext>), never the bundled demo images
+const removeUpload = (url) => {
+  const name = url && url.startsWith('/uploads/') ? path.basename(url) : '';
+  if (/^\d+-\d+\.[a-z0-9]+$/.test(name)) fs.unlink(path.join(uploadDir, name), () => {});
+};
+const canEdit = (c, user) =>
+  user.role === 'student' && c.user_id === user.id && !c.parent_id &&
+  EDITABLE_STATUSES.includes(c.status) && !c.worker_name && c.affected_count <= 1;
+
+router.get('/departments', auth('dept_head', 'admin'), (_req, res) => res.json(DEPARTMENTS));
+
+router.get('/warnings/mine', auth('student'), async (req, res) => {
+  const { rows } = await pool.query(
+    'SELECT reason, source, cleared, created_at FROM warnings WHERE user_id = $1 ORDER BY created_at DESC', [req.user.id]);
+  const active = rows.filter((w) => !w.cleared).length;
+  res.json({ active, max: MAX_WARNINGS, restricted: active >= MAX_WARNINGS, items: rows });
 });
 
 // ---- Student: "has someone already reported this?" (called while the form is being filled) ----
@@ -66,18 +91,24 @@ router.post('/similar', auth('student'), async (req, res) => {
 
 // ---- Student: file a complaint -------------------------------------------------
 router.post('/', auth('student'), upload.single('image'), async (req, res) => {
+  const fail = (code, error, extra = {}) => { discard(req.file); return res.status(code).json({ error, ...extra }); };
+  if (await isRestricted(req.user.id)) return fail(403, RESTRICTED_MESSAGE);
   const description = String(req.body.description || '').trim();
   const words = wordCount(description);
-  if (words < 5) return res.status(400).json({ error: 'Please describe the problem in at least 5 words' });
-  if (words > 300) return res.status(400).json({ error: `Description is ${words} words; the limit is 300` });
+  if (words < 5) return fail(400, 'Please describe the problem in at least 5 words');
+  if (words > 300) return fail(400, `Description is ${words} words; the limit is 300`);
+  if (await isAbusive(description)) {
+    const w = await warnUser({ userId: req.user.id, reason: 'Abusive language in a complaint description.', source: 'auto' });
+    return fail(422, `Abusive language is not allowed on this platform. This is warning ${w.count} of ${MAX_WARNINGS}. Please describe the problem politely.`);
+  }
 
   const picked = findSubCategory(String(req.body.main_category || ''), String(req.body.sub_category || ''));
-  if (!picked) return res.status(400).json({ error: 'Please choose a category and a sub-category' });
+  if (!picked) return fail(400, 'Please choose a category and a sub-category');
 
   const lat = req.body.lat ? parseFloat(req.body.lat) : null;
   const lng = req.body.lng ? parseFloat(req.body.lng) : null;
   const label = String(req.body.location_label || '').trim() || null;
-  if (!label && lat == null) return res.status(400).json({ error: 'Please add the location of the problem' });
+  if (!label && lat == null) return fail(400, 'Please add the location of the problem');
 
   // Visibility: public (default) shows on the campus feed; anything else other than 'false' stays public
   const isPublic = String(req.body.is_public) !== 'false';
@@ -91,11 +122,8 @@ router.post('/', auth('student'), upload.single('image'), async (req, res) => {
       lat: Number.isNaN(lat) ? null : lat, lng: Number.isNaN(lng) ? null : lng
     });
     if (duplicates.length) {
-      return res.status(409).json({
-        code: 'DUPLICATE_FOUND',
-        error: 'Similar issues are already registered. Upvote or comment on one, or confirm that yours is different.',
-        duplicates
-      });
+      return fail(409, 'Similar issues are already registered. Upvote or comment on one, or confirm that yours is different.',
+        { code: 'DUPLICATE_FOUND', duplicates });
     }
   }
 
@@ -110,9 +138,144 @@ router.post('/', auth('student'), upload.single('image'), async (req, res) => {
       picked.main.label, picked.sub.label, confirmedNew, isPublic]
   );
 
+  await logEvent(c.id, req.user.id, 'created', 'Complaint submitted');
   // The assigner worker consumes this stream: classify -> dedupe -> route to the department head
   await redis.xadd(STREAM, '*', 'complaintId', String(c.id));
   res.status(201).json(c);
+});
+
+// ---- Student: edit own complaint until the department head starts work --------------------
+// Allowed while the ticket is still being triaged or waiting for a worker, and nobody else has joined it.
+// An edit re-runs triage (category, department, priority, duplicate check), so the ticket goes to the right head.
+router.patch('/:id', auth('student'), upload.single('image'), async (req, res) => {
+  const fail = (code, error) => { discard(req.file); return res.status(code).json({ error }); };
+  if (await isRestricted(req.user.id)) return fail(403, RESTRICTED_MESSAGE);
+
+  const { rows: [c] } = await pool.query('SELECT * FROM complaints WHERE id = $1', [req.params.id]);
+  if (!c || c.user_id !== req.user.id) return fail(404, 'Ticket not found');
+  if (c.parent_id) return fail(400, 'This report is linked to another ticket and cannot be edited');
+  if (!EDITABLE_STATUSES.includes(c.status)) return fail(400, 'This ticket can no longer be edited.');
+  if (c.worker_name) return fail(400, 'The department head has already arranged a worker, so this ticket can no longer be edited. Add a comment instead.');
+  if (c.affected_count > 1) return fail(400, 'Other students have already joined this issue, so it can no longer be edited. Add a comment instead.');
+
+  const b = req.body;
+  const description = b.description !== undefined ? String(b.description).trim() : c.description;
+  const words = wordCount(description);
+  if (words < 5) return fail(400, 'Please describe the problem in at least 5 words');
+  if (words > 300) return fail(400, `Description is ${words} words; the limit is 300`);
+  if (description !== c.description && (await isAbusive(description))) {
+    const w = await warnUser({ userId: req.user.id, complaintId: c.id, reason: 'Abusive language in an edited complaint.', source: 'auto' });
+    return fail(422, `Abusive language is not allowed on this platform. This is warning ${w.count} of ${MAX_WARNINGS}.`);
+  }
+
+  let main = c.main_category, sub = c.sub_category;
+  if (b.main_category !== undefined || b.sub_category !== undefined) {
+    const picked = findSubCategory(String(b.main_category || ''), String(b.sub_category || ''));
+    if (!picked) return fail(400, 'Please choose a category and a sub-category');
+    main = picked.main.label; sub = picked.sub.label;
+  }
+
+  let label = c.location_label, lat = c.lat, lng = c.lng;
+  if (b.location_label !== undefined && String(b.location_label).trim() !== (c.location_label || '')) {
+    label = String(b.location_label).trim() || null;
+    lat = null; lng = null;                                     // the old GPS point belongs to the old place
+  }
+  if (b.lat && b.lng && !Number.isNaN(parseFloat(b.lat)) && !Number.isNaN(parseFloat(b.lng))) {
+    lat = parseFloat(b.lat); lng = parseFloat(b.lng);
+  }
+  if (!label && lat == null) return fail(400, 'Please add the location of the problem');
+
+  const isPublic = b.is_public !== undefined ? String(b.is_public) !== 'false' : c.is_public;
+  const dropImage = String(b.remove_image) === 'true';
+  const imageUrl = req.file ? `/uploads/${req.file.filename}` : dropImage ? null : c.image_url;
+
+  // The WHERE clause re-checks everything atomically, so a head who assigns a worker at the same moment wins.
+  const { rowCount } = await pool.query(
+    `UPDATE complaints SET description=$2, main_category=$3, sub_category=$4, location_label=$5, lat=$6, lng=$7,
+       is_public=$8, image_url=$9, status='processing', assigned_to=NULL, assigned_at=NULL, embedding=NULL,
+       edited_at=now(), updated_at=now()
+     WHERE id=$1 AND user_id=$10 AND parent_id IS NULL AND status IN ('processing','assigned')
+       AND worker_name IS NULL AND affected_count <= 1`,
+    [c.id, description, main, sub, label, lat, lng, isPublic, imageUrl, req.user.id]
+  );
+  if (!rowCount) return fail(409, 'The department head just picked this ticket up, so it can no longer be edited.');
+
+  if (imageUrl !== c.image_url) removeUpload(c.image_url);
+  await logEvent(c.id, req.user.id, 'edited', 'Reporter edited the complaint; it was sent for re-triage');
+  if (c.assigned_to) await notify(c.assigned_to, c.id, `Ticket ${c.ticket_no} was edited by the reporter and is being re-checked. It may move to another department.`);
+  await redis.xadd(STREAM, '*', 'complaintId', String(c.id));   // worker: classify -> dedupe -> route again
+  emitToRoom('admins', 'stats:changed', {});
+  emitAll('feed:changed', {});
+  res.json({ ok: true });
+});
+
+// ---- Department head: send the ticket to the right department ---------------------------------
+router.patch('/:id/reroute', auth('dept_head', 'admin'), async (req, res) => {
+  const department = String(req.body.department || '').trim();
+  const reason = String(req.body.reason || '').trim();
+  if (!DEPARTMENTS.includes(department)) return res.status(400).json({ error: 'Choose a valid department' });
+  if (reason.length < 5 || reason.length > 300) return res.status(400).json({ error: 'Give a short reason (5 to 300 characters)' });
+
+  const { rows: [c] } = await pool.query('SELECT * FROM complaints WHERE id = $1', [req.params.id]);
+  if (!c || c.parent_id) return res.status(404).json({ error: 'Ticket not found' });
+  if (req.user.role === 'dept_head' && c.department !== req.user.head_department) {
+    return res.status(403).json({ error: 'This ticket belongs to another department' });
+  }
+  if (!ACTIVE_STATUSES.includes(c.status)) return res.status(400).json({ error: 'Only open tickets can be rerouted' });
+  if (department === c.department) return res.status(400).json({ error: `This ticket is already with ${department}` });
+
+  const newHead = await leastLoadedHead(department);
+  // a new department means a new worker: the previous worker and date no longer apply
+  await pool.query(
+    `UPDATE complaints SET department=$2, assigned_to=$3, status='assigned', assigned_at=now(),
+       worker_name=NULL, worker_phone=NULL, expected_date=NULL, worker_assigned_at=NULL, updated_at=now()
+     WHERE id=$1`,
+    [c.id, department, newHead]
+  );
+  await pool.query(`UPDATE complaints SET status='assigned', department=$2 WHERE parent_id = $1`, [c.id, department]);
+  await logEvent(c.id, req.user.id, 'rerouted', `Rerouted from ${c.department} to ${department}. Reason: ${reason}`);
+
+  const msg = `Ticket ${c.ticket_no} was moved from ${c.department} to ${department} (${reason}). The new department will arrange a worker.`;
+  for (const uid of await affectedUsers(c.id)) await notify(uid, c.id, msg);
+  const staffMsg = `Rerouted ticket ${c.ticket_no} (${c.priority}): ${c.summary || c.description.slice(0, 80)}`;
+  if (newHead) await notify(newHead, c.id, staffMsg);
+  else emitToRoom(`dept:${department}`, 'notification', { complaintId: c.id, message: staffMsg });
+  emitToRoom('admins', 'stats:changed', {});
+  emitAll('feed:changed', {});
+  res.json({ ok: true, department });
+});
+
+// ---- Department head: reject a false or invalid complaint, optionally warning the reporter -------
+router.patch('/:id/reject', auth('dept_head', 'admin'), async (req, res) => {
+  const reason = String(req.body.reason || '').trim();
+  const warn = req.body.warn_user === true;
+  if (reason.length < 10 || reason.length > 300) return res.status(400).json({ error: 'Explain why the complaint is rejected (10 to 300 characters)' });
+
+  const { rows: [c] } = await pool.query('SELECT * FROM complaints WHERE id = $1', [req.params.id]);
+  if (!c || c.parent_id) return res.status(404).json({ error: 'Ticket not found' });
+  if (req.user.role === 'dept_head' && c.department !== req.user.head_department) {
+    return res.status(403).json({ error: 'This ticket belongs to another department' });
+  }
+  if (!ACTIVE_STATUSES.includes(c.status)) return res.status(400).json({ error: 'Only open tickets can be rejected' });
+
+  await pool.query(
+    `UPDATE complaints SET status='rejected', reject_reason=$2, resolved_at=NULL, updated_at=now(),
+       assigned_to = COALESCE(assigned_to, $3) WHERE id=$1`,
+    [c.id, reason, req.user.role === 'dept_head' ? req.user.id : null]
+  );
+  await pool.query(`UPDATE complaints SET status='rejected', reject_reason=$2 WHERE parent_id = $1`, [c.id, reason]);
+  await logEvent(c.id, req.user.id, 'rejected', `Complaint rejected. Reason: ${reason}${warn ? ' (reporter warned)' : ''}`);
+
+  const msg = `Ticket ${c.ticket_no} was rejected: ${reason}`;
+  for (const uid of await affectedUsers(c.id)) if (!warn || uid !== c.user_id) await notify(uid, c.id, msg);
+  let warning = null;
+  if (warn) {
+    // the reporter gets one message that carries both the rejection and the warning
+    warning = await warnUser({ userId: c.user_id, complaintId: c.id, issuedBy: req.user.id, reason: `Your complaint ${c.ticket_no} was found to be false or invalid. ${reason}` });
+  }
+  emitToRoom('admins', 'stats:changed', {});
+  emitAll('feed:changed', {});
+  res.json({ ok: true, warning });
 });
 
 // ---- Student: change the visibility of an issue they reported -------------------------------
@@ -173,9 +336,16 @@ router.get('/:id', auth(), async (req, res) => {
     Object.assign(c, {
       worker_name: r.worker_name, worker_phone: r.worker_phone, expected_date: r.expected_date,
       overdue: r.overdue, head_name: r.head_name, status: r.status, resolution_note: r.resolution_note,
-      resolved_at: r.resolved_at, affected_count: r.affected_count, escalated: r.escalated
+      resolved_at: r.resolved_at, affected_count: r.affected_count, escalated: r.escalated,
+      reject_reason: r.reject_reason
     });
   }
+  const { rows: events } = await pool.query(
+    `SELECT e.kind, e.message, e.created_at, u.role AS actor_role, CASE WHEN u.role = 'student' THEN NULL ELSE u.name END AS actor
+     FROM complaint_events e LEFT JOIN users u ON u.id = e.actor_id
+     WHERE e.complaint_id = $1 ORDER BY e.created_at, e.id`, [c.parent_id || c.id]);
+  c.events = events;
+  c.can_edit = canEdit(c, req.user);
   res.json(c);
 });
 
@@ -212,6 +382,7 @@ router.patch('/:id/assign-worker', auth('dept_head', 'admin'), async (req, res) 
     [c.department, name, phone]
   );
 
+  await logEvent(c.id, req.user.id, 'worker', `${name} (${phone}) assigned, expected by ${prettyDay(day)}`);
   const msg = `${name} will fix ticket ${c.ticket_no}. Expected by ${prettyDay(day)}.`;
   for (const uid of await affectedUsers(c.id)) await notify(uid, c.id, msg);
   emitToRoom('admins', 'stats:changed', {});
@@ -235,6 +406,7 @@ router.patch('/:id/resolve', auth('dept_head', 'admin'), async (req, res) => {
   );
   await pool.query(`UPDATE complaints SET status='resolved', resolved_at=now() WHERE parent_id = $1`, [c.id]);
 
+  await logEvent(c.id, req.user.id, 'resolved', note ? `Marked resolved. Note: ${note}` : 'Marked resolved by the department');
   const msg = `Ticket ${c.ticket_no} was marked resolved. Please confirm whether the problem is fixed.`;
   for (const uid of await affectedUsers(c.id)) await notify(uid, c.id, msg);
   emitToRoom('admins', 'stats:changed', {});
@@ -260,12 +432,14 @@ router.post('/:id/feedback', auth('student'), async (req, res) => {
     await pool.query(
       `UPDATE complaints SET status = 'reopened', resolved_at = NULL, priority = 'high', expected_date = NULL, updated_at = now()
        WHERE id = $1 OR parent_id = $1`, [rootId]);
+    await logEvent(rootId, req.user.id, 'reopened', 'A student reported that the problem is not fixed; ticket reopened');
     const msg = `${req.user.name} reports ticket ${root.ticket_no} is NOT fixed. Reopened.`;
     if (root.assigned_to) await notify(root.assigned_to, rootId, msg);
     emitToRoom(`dept:${root.department}`, 'notification', { complaintId: rootId, message: msg });
     emitToRoom('admins', 'notification', { complaintId: rootId, message: msg });
   } else if (root.user_id === req.user.id) {
     await pool.query(`UPDATE complaints SET status = 'closed', updated_at = now() WHERE id = $1 OR parent_id = $1`, [rootId]);
+    await logEvent(rootId, req.user.id, 'closed', 'Reporter confirmed the problem is fixed; ticket closed');
   }
   emitToRoom('admins', 'stats:changed', {});
   emitAll('feed:changed', {});

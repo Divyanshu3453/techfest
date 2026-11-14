@@ -25,5 +25,5 @@ export const fmtDate = (d) => new Date(d).toLocaleString([], { dateStyle: 'mediu
 export const fmtDay = (iso) => (iso ? new Date(`${iso}T00:00:00`).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' }) : '');
 export const statusLabel = (s) => ({
   processing: 'Being triaged', assigned: 'Assigned', in_progress: 'In progress', resolved: 'Resolved – please confirm',
-  reopened: 'Reopened', closed: 'Closed', linked: 'Linked to an existing ticket'
+  reopened: 'Reopened', closed: 'Closed', linked: 'Linked to an existing ticket', rejected: 'Rejected'
 }[s] || s);

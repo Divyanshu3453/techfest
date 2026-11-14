@@ -324,3 +324,30 @@ html { background: var(--paper); }
 .visibility-opt small { font-weight: 400; color: var(--muted, #5b6b66); }
 .chip.vis-public { background: #d8eee3; color: var(--green); }
 .chip.vis-private { background: #e6e6ef; color: #3b3b5c; }
+
+/* ===== v2: rejected tickets, history, edit / reroute / reject / moderation ===== */
+.chip.s-rejected { background: #f6d9d5; color: var(--red); }
+.issue.s-rejected { border-left-color: var(--red); }
+.reject-banner { background: #f8e2df; border-left: 4px solid var(--red); padding: .7rem .9rem; border-radius: 6px; margin: .8rem 0; }
+.reject-banner p { margin: .25rem 0 0; }
+.warn-box { background: #fff4d6; border-left: 4px solid var(--amber); padding: .6rem .9rem; border-radius: 6px; margin: .6rem 0; }
+.warn-box.restricted { background: #f8e2df; border-color: var(--red); }
+.timeline { list-style: none; margin: .5rem 0 1rem; padding: 0 0 0 1rem; border-left: 2px solid var(--line); }
+.timeline li { position: relative; margin: 0 0 .8rem; padding-left: .8rem; }
+.timeline li::before { content: ''; position: absolute; left: -1.38rem; top: .35rem; width: 10px; height: 10px; border-radius: 50%; background: var(--teal); }
+.timeline li.k-rejected::before, .timeline li.k-comment_removed::before { background: var(--red); }
+.timeline li.k-rerouted::before, .timeline li.k-edited::before { background: var(--amber); }
+.timeline small { display: block; color: var(--muted); }
+.edit-form { border: 1px dashed var(--line); border-radius: var(--radius); padding: .6rem 1rem 1rem; margin: 1rem 0; background: #fafcfb; }
+.edit-form .row { gap: .6rem; margin-top: .6rem; }
+.check { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; }
+.check input { width: auto; margin: 0; }
+.staff-tools { margin-top: .8rem; border-top: 1px solid var(--line); padding-top: .6rem; }
+.staff-tools details { margin: .4rem 0; }
+.staff-tools summary { cursor: pointer; font-weight: 600; }
+.staff-tools form { margin-top: .5rem; }
+.mod-comment { border-bottom: 1px solid var(--line); padding: .5rem 0; }
+.mod-comment p { margin: .2rem 0; }
+.mod-comment .inline-form { display: flex; gap: .5rem; margin-top: .4rem; }
+.mod-comment .inline-form input { margin: 0; }
+.profile-stats .warn-stat strong { color: var(--red); }

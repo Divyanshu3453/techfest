@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { pool } from '../config.js';
 import { auth } from '../middleware/auth.js';
+import { notify } from '../services/notify.js';
+import { MAX_WARNINGS } from '../constants.js';
 
 const router = Router();
 
@@ -10,6 +12,9 @@ router.get('/stats', auth('admin'), async (_req, res) => {
     q(`SELECT count(*)::int AS total,
               count(*) FILTER (WHERE status IN ('assigned','in_progress','reopened'))::int AS open,
               count(*) FILTER (WHERE status IN ('resolved','closed'))::int AS resolved,
+              count(*) FILTER (WHERE status = 'rejected' AND parent_id IS NULL)::int AS rejected,
+              (SELECT count(*)::int FROM complaint_events WHERE kind = 'rerouted') AS rerouted,
+              (SELECT count(*)::int FROM warnings) AS warnings_issued,
               count(*) FILTER (WHERE escalated)::int AS escalated,
               count(*) FILTER (WHERE expected_date < current_date AND status IN ('in_progress','reopened'))::int AS overdue,
               count(*) FILTER (WHERE parent_id IS NOT NULL)::int AS duplicates_merged,
@@ -37,6 +42,27 @@ router.get('/stats', auth('admin'), async (_req, res) => {
     by_status: byStatus, by_department: byDept, by_category: byCategory,
     daily, hotspots, escalated, head_load: headLoad
   });
+});
+
+// Students who currently hold warnings (3 = restricted), newest first
+router.get('/warnings', auth('admin'), async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT u.id, u.name, u.enrollment, u.hostel,
+            count(*) FILTER (WHERE NOT w.cleared)::int AS active,
+            max(w.created_at) AS last_at,
+            (array_agg(w.reason ORDER BY w.created_at DESC) FILTER (WHERE NOT w.cleared))[1] AS last_reason
+     FROM warnings w JOIN users u ON u.id = w.user_id
+     GROUP BY u.id HAVING count(*) FILTER (WHERE NOT w.cleared) > 0
+     ORDER BY active DESC, last_at DESC LIMIT 20`);
+  res.json({ max: MAX_WARNINGS, users: rows.map((r) => ({ ...r, restricted: r.active >= MAX_WARNINGS })) });
+});
+
+// Clear a student's warnings (history is kept, they just stop counting) and restore access
+router.post('/users/:id/restore', auth('admin'), async (req, res) => {
+  const { rowCount } = await pool.query('UPDATE warnings SET cleared = TRUE WHERE user_id = $1 AND NOT cleared', [req.params.id]);
+  if (!rowCount) return res.status(404).json({ error: 'This student has no active warnings' });
+  await notify(Number(req.params.id), null, 'The administrator has cleared your warnings. You can report and comment again.');
+  res.json({ ok: true });
 });
 
 export default router;

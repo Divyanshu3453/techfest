@@ -3,6 +3,8 @@ import { ACTIVE_STATUSES, findSubCategory } from '../constants.js';
 import { classify, embed, cosine } from '../services/llm.js';
 import { haversineKm } from '../services/geo.js';
 import { notify } from '../services/notify.js';
+import { leastLoadedHead } from '../services/routing.js';
+import { logEvent } from '../services/moderation.js';
 import { addVote } from '../services/trending.js';
 import { emitToRoom, emitAll } from '../socket.js';
 
@@ -53,19 +55,14 @@ async function processComplaint(id) {
        priority=$6, summary=$7, embedding=$8, updated_at=now() WHERE id=$1`,
       [id, best.id, cls.problem_type, cls.category, cls.department, cls.priority, cls.summary, emb]
     );
+    await logEvent(id, null, 'linked', `Matched existing ticket ${best.ticket_no} and merged into it`);
     await addVote(best.id, c.user_id);
     await notify(c.user_id, id, `Your report matches ticket ${best.ticket_no}, which is already being handled. You've been added as an affected student.`);
     return;
   }
 
   // Least-loaded department head (a department can have several heads)
-  const { rows: staff } = await pool.query(
-    `SELECT u.id FROM users u WHERE u.role = 'dept_head' AND u.head_department = $1
-     ORDER BY (SELECT count(*) FROM complaints x WHERE x.assigned_to = u.id AND x.status = ANY($2)), u.id
-     LIMIT 1`,
-    [cls.department, ACTIVE_STATUSES]
-  );
-  const assignee = staff[0]?.id || null;
+  const assignee = await leastLoadedHead(cls.department);
 
   await pool.query(
     `UPDATE complaints SET status='assigned', problem_type=$2, category=$3, department=$4, priority=$5,
@@ -74,6 +71,7 @@ async function processComplaint(id) {
   );
   await pool.query('INSERT INTO complaint_votes (complaint_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [id, c.user_id]);
 
+  await logEvent(id, null, 'routed', `Classified as ${cls.category} (${cls.priority} priority) and sent to ${cls.department}`);
   await notify(c.user_id, id, `Ticket ${c.ticket_no} has been sent to the ${cls.department} head, who will arrange a worker.`);
   const staffMsg = `New ${cls.priority} ticket ${c.ticket_no}: ${cls.summary}`;
   if (assignee) await notify(assignee, id, staffMsg);

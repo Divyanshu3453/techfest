@@ -21,9 +21,19 @@ function Bars({ title, data, labelKey }) {
 
 export default function Admin() {
   const [s, setS] = useState(null);
+  const [warned, setWarned] = useState({ max: 3, users: [] });
   const [error, setError] = useState('');
 
-  const load = useCallback(() => api('/admin/stats').then(setS).catch((e) => setError(e.message)), []);
+  const load = useCallback(() => {
+    api('/admin/stats').then(setS).catch((e) => setError(e.message));
+    api('/admin/warnings').then(setWarned).catch(() => {});
+  }, []);
+
+  async function restore(id) {
+    setError('');
+    try { await api(`/admin/users/${id}/restore`, { method: 'POST' }); load(); }
+    catch (e) { setError(e.message); }
+  }
 
   useEffect(() => {
     load();
@@ -38,6 +48,7 @@ export default function Admin() {
   const kpis = [
     ['Total tickets', t.total], ['Open', t.open], ['Resolved', t.resolved],
     ['Escalated', t.escalated], ['Overdue', t.overdue], ['Duplicates merged', t.duplicates_merged],
+    ['Rejected', t.rejected], ['Rerouted', t.rerouted], ['Warnings issued', t.warnings_issued],
     ['Avg. fix time', t.avg_resolution_hours == null ? '—' : `${t.avg_resolution_hours} h`]
   ];
 
@@ -65,6 +76,19 @@ export default function Admin() {
               <strong>{e.ticket_no}</strong> {e.summary}
               <small className="muted"> {e.department} · {e.affected_count} affected · {e.priority}</small>
             </Link>
+          ))}
+        </section>
+
+        <section className="card">
+          <h3>Students with active warnings</h3>
+          {warned.users.length === 0 && <p className="muted">No student currently has a warning.</p>}
+          {warned.users.map((u) => (
+            <div key={u.id} className="mod-comment">
+              <strong>{u.name}</strong> <small className="muted">{u.enrollment}</small>{' '}
+              <span className={`chip ${u.restricted ? 'danger' : 'p-high'}`}>{u.active} / {warned.max}{u.restricted ? ' · restricted' : ''}</span>
+              <p className="muted">Latest: {u.last_reason}</p>
+              <button className="btn ghost small" onClick={() => restore(u.id)}>Clear warnings and restore access</button>
+            </div>
           ))}
         </section>
 

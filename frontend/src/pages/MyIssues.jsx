@@ -3,7 +3,9 @@ import { Link } from 'react-router-dom';
 import { api, fmtDate, fmtDay, statusLabel } from '../api.js';
 import { PinIcon } from '../Icons.jsx';
 
-const DONE = ['resolved', 'closed'];
+const DONE = ['resolved', 'closed', 'rejected'];
+// can still be edited: not yet picked up by the department head, nobody else joined, not a linked duplicate
+const editable = (c) => ['processing', 'assigned'].includes(c.status) && !c.worker_name && !c.parent_id && c.affected_count <= 1;
 
 export default function MyIssues({ kind }) {
   const closed = kind === 'closed';
@@ -35,7 +37,7 @@ export default function MyIssues({ kind }) {
     <>
       <div className="li-card section-title">
         <h1>{closed ? 'Closed issues' : 'Ongoing issues'}</h1>
-        <p className="muted">{closed ? 'Issues you reported that have been resolved or closed.' : 'Issues you reported that are still being handled.'}</p>
+        <p className="muted">{closed ? 'Issues you reported that have been resolved, closed or rejected.' : 'Issues you reported that are still being handled.'}</p>
       </div>
       {error && <p className="error">{error}</p>}
       {items && shown.length === 0 && (
@@ -57,6 +59,7 @@ export default function MyIssues({ kind }) {
                 <span>{c.ticket_no}</span>
                 <span>{fmtDate(c.created_at)}</span>
               </p>
+              {c.status === 'rejected' && c.reject_reason && <p className="eta late">Rejected: {c.reject_reason}</p>}
               {!closed && c.worker_name && (
                 <p className={`eta${c.overdue ? ' late' : ''}`}>{c.worker_name} · expected by {fmtDay(c.expected_date) || 'date to be confirmed'}{c.overdue ? ' (overdue)' : ''}</p>
               )}
@@ -67,6 +70,7 @@ export default function MyIssues({ kind }) {
                     {c.is_public ? 'Make private' : 'Make public'}
                   </button>
                 )}
+                {editable(c) && <Link to={`/ticket/${c.id}`} className="act">Edit</Link>}
                 <Link to={`/ticket/${c.id}`} className="act">View details</Link>
               </div>
             </div>

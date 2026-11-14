@@ -1,0 +1,55 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment variables
+.env
+
+# Virtual environment
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files
+indexing/data/
+indexing/output/
+
+# Test files
+test.py
+
+# RAG generated files
+indexing/data/
+indexing/output/
+
+# Temporary testing
+test.py
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment
+.env
+
+# Virtual environment
+venv/
+.venv/
+
+# RAG generated files
+indexing/data/
+indexing/output/
+
+# Temporary files
+test.py

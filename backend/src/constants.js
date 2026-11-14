@@ -15,6 +15,10 @@ export const DEPARTMENTS = [
 export const PRIORITIES = ['low', 'medium', 'high', 'critical'];
 export const PRIORITY_RANK = { low: 0, medium: 1, high: 2, critical: 3 };
 export const ACTIVE_STATUSES = ['assigned', 'in_progress', 'reopened'];
+// statuses that end a ticket's life for the reporter (shown under "Closed issues")
+export const DONE_STATUSES = ['resolved', 'closed', 'rejected'];
+// active warnings after which a student can no longer report or comment until an admin restores access
+export const MAX_WARNINGS = 3;
 
 // Category -> sub-category tree shown in the "Report an issue" dropdowns.
 // `department` decides who gets the ticket; null = let the AI triage pick the department.

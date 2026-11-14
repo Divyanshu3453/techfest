@@ -116,3 +116,36 @@ INSERT INTO locations (label, lat, lng) VALUES
   ('Main Gate Road',                      23.81150, 91.28550),
   ('Sports Complex',                      23.81600, 91.28800)
 ON CONFLICT (label) DO NOTHING;
+
+-- ===== v2: reroute, edit-before-assignment, rejection with warnings, moderation =====
+-- 'rejected' = the department head found the complaint false / invalid (a reason is always stored)
+ALTER TABLE complaints DROP CONSTRAINT IF EXISTS complaints_status_check;
+ALTER TABLE complaints ADD CONSTRAINT complaints_status_check
+  CHECK (status IN ('processing','assigned','in_progress','resolved','reopened','closed','linked','rejected'));
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS reject_reason TEXT;
+ALTER TABLE complaints ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+
+-- Warnings given to a student: by a department head / admin (manual) or by the abuse filter (auto).
+-- 3 active warnings restrict the account from reporting and commenting until an admin restores it.
+CREATE TABLE IF NOT EXISTS warnings (
+  id SERIAL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  complaint_id INT REFERENCES complaints(id) ON DELETE SET NULL,
+  issued_by INT REFERENCES users(id) ON DELETE SET NULL,   -- NULL = issued automatically
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','auto')),
+  reason TEXT NOT NULL,
+  cleared BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_warnings_user ON warnings(user_id) WHERE NOT cleared;
+
+-- Complete, visible history of a ticket (the problem statement asks for a transparent history)
+CREATE TABLE IF NOT EXISTS complaint_events (
+  id SERIAL PRIMARY KEY,
+  complaint_id INT NOT NULL REFERENCES complaints(id) ON DELETE CASCADE,
+  actor_id INT REFERENCES users(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_events_complaint ON complaint_events(complaint_id, created_at);

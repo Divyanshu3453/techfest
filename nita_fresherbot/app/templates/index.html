@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>NITA FresherBot</title>
+
+    <link rel="preconnect"
+          href="https://fonts.googleapis.com">
+
+    <link rel="preconnect"
+          href="https://fonts.gstatic.com"
+          crossorigin>
+
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700&display=swap"
+          rel="stylesheet">
+
+    <link rel="stylesheet"
+          href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css">
+
+    <link rel="stylesheet"
+          href="/static/style.css">
+
+</head>
+
+<body>
+
+<div class="app">
+
+    <!-- ================= HEADER ================= -->
+
+    <header>
+
+        <div class="logo">
+
+            <div class="logo-icon">
+
+                🎓
+
+            </div>
+
+            <div>
+
+                <h2>NITA FresherBot</h2>
+
+                <p>
+
+                    AI Assistant for NIT Agartala
+
+                </p>
+
+            </div>
+
+        </div>
+
+    </header>
+
+
+
+    <!-- ================= CHAT ================= -->
+
+    <main id="chat">
+
+        <section class="welcome">
+
+            <h1>
+
+                NITA FresherBot
+
+            </h1>
+
+            <p>
+
+                Search official institute documents like the
+                <strong>Prospectus</strong>,
+                <strong>First Year Syllabus</strong>,
+                <strong>Academic Calendar</strong>,
+                and departmental information.
+
+            </p>
+
+
+            <div class="chips">
+
+                <button onclick="fillQuestion('What is hostel fee?')">
+
+                    Hostel Fee
+
+                </button>
+
+                <button onclick="fillQuestion('Show first year syllabus')">
+
+                    First Year Syllabus
+
+                </button>
+
+                <button onclick="fillQuestion('Tell me about CSE Department')">
+
+                    CSE Department
+
+                </button>
+
+                <button onclick="fillQuestion('Scholarship details')">
+
+                    Scholarships
+
+                </button>
+
+            </div>
+
+        </section>
+
+    </main>
+
+
+
+    <!-- ================= INPUT ================= -->
+
+    <footer>
+
+        <div class="input-box">
+
+            <textarea
+
+                id="query"
+
+                rows="1"
+
+                placeholder="Ask anything about NIT Agartala..."
+
+                onkeydown="handleEnter(event)"
+
+            ></textarea>
+
+
+            <button
+
+                id="sendButton"
+
+                onclick="askQuestion()">
+
+                <i class="fa-solid fa-arrow-up"></i>
+
+            </button>
+
+        </div>
+
+    </footer>
+
+</div>
+
+<script src="/static/script.js"></script>
+
+</body>
+
+</html>
